@@ -1,1 +1,8 @@
 node_modules
+dist
+dist-electron
+release
+output
+build-out
+dist-*
+*.exe
