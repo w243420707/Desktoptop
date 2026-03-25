@@ -1,0 +1,16 @@
+directories:
+  output: release-new
+  buildResources: build
+appId: com.desktop.quickbutton
+productName: 桌面快捷按钮
+files:
+  - filter:
+      - dist/**/*
+      - dist-electron/**/*
+win:
+  target:
+    - portable
+  icon: build/icon.ico
+portable:
+  artifactName: 桌面快捷按钮.exe
+electronVersion: 29.4.6

@@ -1,0 +1,361 @@
+import { app, BrowserWindow, screen, clipboard, ipcMain } from 'electron'
+import { join } from 'path'
+import { spawn } from 'child_process'
+import { writeFileSync, unlinkSync, existsSync, mkdirSync } from 'fs'
+import { tmpdir, appData } from 'os'
+import Store from 'electron-store'
+
+const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged
+
+interface QuickButton {
+  id: string
+  name: string
+  type: 'text' | 'shortcut'
+  content: string
+  appendEnter?: boolean
+}
+
+interface AppConfig {
+  buttons: QuickButton[]
+  windowPosition?: { x: number; y: number }
+}
+
+const configDir = join(app.getPath('appData'), 'desktop-quick-button')
+if (!existsSync(configDir)) {
+  mkdirSync(configDir, { recursive: true })
+}
+
+const store = new Store<AppConfig>({
+  cwd: configDir,
+  name: 'config'
+})
+
+const DEFAULT_BUTTONS: QuickButton[] = [
+  { id: '1', name: '复制', type: 'shortcut', content: 'Ctrl+C' },
+  { id: '2', name: '粘贴', type: 'shortcut', content: 'Ctrl+V' },
+  { id: '3', name: '续写', type: 'text', content: '继续续写', appendEnter: true },
+  { id: '4', name: '继续', type: 'text', content: '继续', appendEnter: true },
+  { id: '5', name: '严格', type: 'text', content: '严格执行', appendEnter: false },
+  { id: '6', name: '更新', type: 'text', content: '全量检查这部小说的所有文件，是否都根据正文做了更新', appendEnter: true }
+]
+
+const WINDOW_WIDTH = 100
+const WINDOW_MIN_HEIGHT = 300
+const WINDOW_MAX_HEIGHT = 500
+const BUTTON_HEIGHT = 32
+const BUTTON_GAP = 4
+const HEADER_HEIGHT = 22
+const CONTAINER_PADDING = 12
+
+let mainWindow: BrowserWindow | null = null
+
+function calculateWindowHeight(buttonCount: number): number {
+  const height = HEADER_HEIGHT + CONTAINER_PADDING + buttonCount * BUTTON_HEIGHT + (buttonCount - 1) * BUTTON_GAP + CONTAINER_PADDING
+  return Math.min(Math.max(height, WINDOW_MIN_HEIGHT), WINDOW_MAX_HEIGHT)
+}
+
+function getDefaultPosition(height: number): { x: number; y: number } {
+  const primaryDisplay = screen.getPrimaryDisplay()
+  const { width, height: screenHeight } = primaryDisplay.workAreaSize
+  return {
+    x: width - WINDOW_WIDTH - 20,
+    y: screenHeight - height - 20
+  }
+}
+
+function getSavedPosition(height: number): { x: number; y: number } {
+  const savedPosition = store.get('windowPosition')
+  if (savedPosition) {
+    const primaryDisplay = screen.getPrimaryDisplay()
+    const { width, height: screenHeight } = primaryDisplay.workAreaSize
+    if (savedPosition.x >= 0 && savedPosition.x <= width - WINDOW_WIDTH &&
+        savedPosition.y >= 0 && savedPosition.y <= screenHeight - height) {
+      return savedPosition
+    }
+  }
+  return getDefaultPosition(height)
+}
+
+function saveWindowPosition(): void {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    const [x, y] = mainWindow.getPosition()
+    store.set('windowPosition', { x, y })
+  }
+}
+
+function createWindow(): void {
+  const config = store.store
+  const buttonCount = config?.buttons?.length || 0
+  const height = calculateWindowHeight(buttonCount)
+  const position = getSavedPosition(height)
+  
+  mainWindow = new BrowserWindow({
+    width: WINDOW_WIDTH,
+    height: height,
+    minWidth: WINDOW_WIDTH,
+    minHeight: WINDOW_MIN_HEIGHT,
+    maxWidth: WINDOW_WIDTH,
+    maxHeight: WINDOW_MAX_HEIGHT,
+    x: position.x,
+    y: position.y,
+    show: false,
+    autoHideMenuBar: true,
+    frame: false,
+    transparent: true,
+    alwaysOnTop: true,
+    resizable: false,
+    skipTaskbar: false,
+    focusable: true,
+    webPreferences: {
+      preload: join(__dirname, 'preload.js'),
+      sandbox: false,
+      contextIsolation: true,
+      nodeIntegration: false
+    }
+  })
+
+  mainWindow.on('ready-to-show', () => {
+    mainWindow?.show()
+  })
+
+  mainWindow.on('close', () => {
+    saveWindowPosition()
+  })
+
+  mainWindow.on('moved', () => {
+    saveWindowPosition()
+  })
+
+  if (isDev && process.env['ELECTRON_RENDERER_URL']) {
+    mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])
+  } else if (isDev) {
+    mainWindow.loadURL('http://localhost:5173')
+  } else {
+    mainWindow.loadFile(join(__dirname, '../dist/index.html'))
+  }
+}
+
+app.whenReady().then(() => {
+  createWindow()
+
+  app.on('activate', function () {
+    if (BrowserWindow.getAllWindows().length === 0) {
+      createWindow()
+    } else if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.show()
+    }
+  })
+})
+
+app.on('window-all-closed', () => {
+  if (process.platform !== 'darwin') {
+    app.quit()
+  }
+})
+
+app.on('before-quit', () => {
+  saveWindowPosition()
+})
+
+function convertToSendKeys(shortcut: string): string {
+  const parts = shortcut.split('+').map(p => p.trim().toLowerCase())
+  
+  let result = ''
+  let mainKey = ''
+  
+  for (const part of parts) {
+    if (part === 'ctrl' || part === 'control') {
+      result += '^'
+    } else if (part === 'alt') {
+      result += '%'
+    } else if (part === 'shift') {
+      result += '+'
+    } else if (part.length === 1) {
+      mainKey = part
+    } else {
+      const specialKeys: Record<string, string> = {
+        'enter': '{ENTER}',
+        'tab': '{TAB}',
+        'escape': '{ESC}',
+        'esc': '{ESC}',
+        'backspace': '{BACKSPACE}',
+        'delete': '{DELETE}',
+        'space': ' ',
+        'up': '{UP}',
+        'down': '{DOWN}',
+        'left': '{LEFT}',
+        'right': '{RIGHT}',
+        'f1': '{F1}', 'f2': '{F2}', 'f3': '{F3}', 'f4': '{F4}',
+        'f5': '{F5}', 'f6': '{F6}', 'f7': '{F7}', 'f8': '{F8}',
+        'f9': '{F9}', 'f10': '{F10}', 'f11': '{F11}', 'f12': '{F12}'
+      }
+      if (specialKeys[part]) {
+        mainKey = specialKeys[part]
+      }
+    }
+  }
+  
+  result += mainKey
+  return result
+}
+
+async function sendKeysWithVBScript(sendKeys: string): Promise<void> {
+  const vbsContent = `Set WshShell = CreateObject("WScript.Shell")
+WshShell.SendKeys "${sendKeys}"
+WScript.Sleep 100
+`
+  
+  const vbsPath = join(tmpdir(), `sendkeys_${Date.now()}.vbs`)
+  
+  try {
+    writeFileSync(vbsPath, vbsContent)
+    
+    await new Promise<void>((resolve, reject) => {
+      const proc = spawn('wscript', [vbsPath], {
+        detached: true,
+        windowsHide: true
+      })
+      
+      proc.on('close', (code) => {
+        try { unlinkSync(vbsPath) } catch {}
+        if (code === 0) resolve()
+        else reject(new Error(`VBScript exited with code ${code}`))
+      })
+      
+      proc.on('error', (err) => {
+        try { unlinkSync(vbsPath) } catch {}
+        reject(err)
+      })
+    })
+  } catch (error) {
+    try { unlinkSync(vbsPath) } catch {}
+    throw error
+  }
+}
+
+ipcMain.handle('input:text', async (_event, text: string, appendEnter: boolean = false) => {
+  try {
+    if (!text || typeof text !== 'string') {
+      return { success: false, error: '无效的文本内容' }
+    }
+
+    const originalClipboard = clipboard.readText()
+    clipboard.writeText(text)
+    
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.minimize()
+    }
+    
+    await new Promise(resolve => setTimeout(resolve, 400))
+    
+    await sendKeysWithVBScript('^v')
+    
+    if (appendEnter) {
+      await new Promise(resolve => setTimeout(resolve, 50))
+      await sendKeysWithVBScript('{ENTER}')
+    }
+    
+    await new Promise(resolve => setTimeout(resolve, 150))
+    
+    if (originalClipboard !== null && originalClipboard !== undefined) {
+      clipboard.writeText(originalClipboard)
+    }
+    
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.restore()
+    }
+    
+    return { success: true }
+  } catch (error) {
+    console.error('文本输入失败:', error)
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.restore()
+    }
+    return { 
+      success: false, 
+      error: error instanceof Error ? error.message : '未知错误' 
+    }
+  }
+})
+
+ipcMain.handle('execute:shortcut', async (_event, shortcut: string) => {
+  try {
+    if (!shortcut || typeof shortcut !== 'string') {
+      return { success: false, error: '无效的快捷键' }
+    }
+
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.minimize()
+    }
+    
+    await new Promise(resolve => setTimeout(resolve, 400))
+    
+    const sendKeys = convertToSendKeys(shortcut)
+    await sendKeysWithVBScript(sendKeys)
+    
+    await new Promise(resolve => setTimeout(resolve, 150))
+    
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.restore()
+    }
+    
+    return { success: true }
+  } catch (error) {
+    console.error('快捷键执行失败:', error)
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.restore()
+    }
+    return { 
+      success: false, 
+      error: error instanceof Error ? error.message : '未知错误' 
+    }
+  }
+})
+
+ipcMain.handle('config:get', () => {
+  try {
+    const config = store.store
+    if (!config || !config.buttons) {
+      return { buttons: DEFAULT_BUTTONS }
+    }
+    return config
+  } catch (error) {
+    console.error('获取配置失败:', error)
+    return { buttons: DEFAULT_BUTTONS }
+  }
+})
+
+ipcMain.handle('config:set', (_event, config: AppConfig) => {
+  try {
+    store.store = config
+    if (mainWindow && !mainWindow.isDestroyed() && config.buttons) {
+      const newHeight = calculateWindowHeight(config.buttons.length)
+      mainWindow.setSize(WINDOW_WIDTH, newHeight)
+      mainWindow.setMinimumSize(WINDOW_WIDTH, newHeight)
+      mainWindow.setMaximumSize(WINDOW_WIDTH, newHeight)
+    }
+    return { success: true }
+  } catch (error) {
+    console.error('保存配置失败:', error)
+    return { 
+      success: false, 
+      error: error instanceof Error ? error.message : '保存配置失败' 
+    }
+  }
+})
+
+ipcMain.handle('window:resize', (_event, width: number, height: number) => {
+  try {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.setSize(width, height)
+      mainWindow.setMinimumSize(width, height)
+      mainWindow.setMaximumSize(width, height)
+    }
+    return { success: true }
+  } catch (error) {
+    return { 
+      success: false, 
+      error: error instanceof Error ? error.message : '调整窗口大小失败' 
+    }
+  }
+})
