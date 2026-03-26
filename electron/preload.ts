@@ -14,9 +14,14 @@ const electronAPI = {
   getWindowPosition: () =>
     ipcRenderer.invoke('window:getPosition'),
   setWindowPosition: (x: number, y: number) =>
-    ipcRenderer.invoke('window:setPosition', x, y)
+    ipcRenderer.invoke('window:setPosition', x, y),
+  // NOTE: 模态框打开时设为 true（允许键盘输入），关闭时设为 false（不抢焦点）
+  setFocusable: (focusable: boolean) =>
+    ipcRenderer.invoke('window:setFocusable', focusable)
 }
 
 contextBridge.exposeInMainWorld('electronAPI', electronAPI)
 
 export type ElectronAPI = typeof electronAPI
+
+

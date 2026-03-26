@@ -2,7 +2,7 @@ import { app, BrowserWindow, screen, clipboard, ipcMain } from 'electron'
 import { join } from 'path'
 import { spawn } from 'child_process'
 import { writeFileSync, unlinkSync, existsSync, mkdirSync } from 'fs'
-import { tmpdir, appData } from 'os'
+import { tmpdir } from 'os'
 import Store from 'electron-store'
 
 const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged
@@ -84,7 +84,7 @@ function createWindow(): void {
   const buttonCount = buttons?.length || 0
   const height = calculateWindowHeight(buttonCount)
   const position = getSavedPosition(height)
-  
+
   mainWindow = new BrowserWindow({
     width: WINDOW_WIDTH,
     height: height,
@@ -100,8 +100,9 @@ function createWindow(): void {
     transparent: true,
     alwaysOnTop: true,
     resizable: false,
-    skipTaskbar: false,
-    focusable: true,
+    skipTaskbar: true,
+    // NOTE: 初始设置为不可聚焦，防止点击按钮时从目标应用抢走焦点
+    focusable: false,
     webPreferences: {
       preload: join(__dirname, 'preload.js'),
       sandbox: false,
@@ -153,12 +154,14 @@ app.on('before-quit', () => {
   saveWindowPosition()
 })
 
+// ========== VBScript SendKeys ==========
+
 function convertToSendKeys(shortcut: string): string {
   const parts = shortcut.split('+').map(p => p.trim().toLowerCase())
-  
+
   let result = ''
   let mainKey = ''
-  
+
   for (const part of parts) {
     if (part === 'ctrl' || part === 'control') {
       result += '^'
@@ -190,7 +193,7 @@ function convertToSendKeys(shortcut: string): string {
       }
     }
   }
-  
+
   result += mainKey
   return result
 }
@@ -200,24 +203,23 @@ async function sendKeysWithVBScript(sendKeys: string): Promise<void> {
 WshShell.SendKeys "${sendKeys}"
 WScript.Sleep 100
 `
-  
+
   const vbsPath = join(tmpdir(), `sendkeys_${Date.now()}.vbs`)
-  
+
   try {
     writeFileSync(vbsPath, vbsContent)
-    
+
     await new Promise<void>((resolve, reject) => {
       const proc = spawn('wscript', [vbsPath], {
-        detached: true,
         windowsHide: true
       })
-      
+
       proc.on('close', (code) => {
         try { unlinkSync(vbsPath) } catch {}
         if (code === 0) resolve()
         else reject(new Error(`VBScript exited with code ${code}`))
       })
-      
+
       proc.on('error', (err) => {
         try { unlinkSync(vbsPath) } catch {}
         reject(err)
@@ -229,6 +231,11 @@ WScript.Sleep 100
   }
 }
 
+// ========== IPC Handlers ==========
+
+// NOTE: 窗口设置为 focusable: false，点击按钮不会从目标应用抢焦点，
+//       VBScript SendKeys 直接发送到仍然保持前台的目标窗口，无需隐藏/显示窗口。
+
 ipcMain.handle('input:text', async (_event, text: string, appendEnter: boolean = false) => {
   try {
     if (!text || typeof text !== 'string') {
@@ -237,39 +244,28 @@ ipcMain.handle('input:text', async (_event, text: string, appendEnter: boolean =
 
     const originalClipboard = clipboard.readText()
     clipboard.writeText(text)
-    
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.minimize()
-    }
-    
-    await new Promise(resolve => setTimeout(resolve, 400))
-    
+
+    await new Promise(resolve => setTimeout(resolve, 100))
+
     await sendKeysWithVBScript('^v')
-    
+
     if (appendEnter) {
-      await new Promise(resolve => setTimeout(resolve, 50))
+      await new Promise(resolve => setTimeout(resolve, 100))
       await sendKeysWithVBScript('{ENTER}')
     }
-    
-    await new Promise(resolve => setTimeout(resolve, 150))
-    
+
+    await new Promise(resolve => setTimeout(resolve, 200))
+
     if (originalClipboard !== null && originalClipboard !== undefined) {
       clipboard.writeText(originalClipboard)
     }
-    
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.restore()
-    }
-    
+
     return { success: true }
   } catch (error) {
     console.error('文本输入失败:', error)
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.restore()
-    }
-    return { 
-      success: false, 
-      error: error instanceof Error ? error.message : '未知错误' 
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : '未知错误'
     }
   }
 })
@@ -280,30 +276,25 @@ ipcMain.handle('execute:shortcut', async (_event, shortcut: string) => {
       return { success: false, error: '无效的快捷键' }
     }
 
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.minimize()
-    }
-    
-    await new Promise(resolve => setTimeout(resolve, 400))
-    
     const sendKeys = convertToSendKeys(shortcut)
     await sendKeysWithVBScript(sendKeys)
-    
-    await new Promise(resolve => setTimeout(resolve, 150))
-    
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.restore()
-    }
-    
+
     return { success: true }
   } catch (error) {
     console.error('快捷键执行失败:', error)
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.restore()
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : '未知错误'
     }
-    return { 
-      success: false, 
-      error: error instanceof Error ? error.message : '未知错误' 
+  }
+})
+
+// NOTE: 模态框打开时设为 focusable=true 以允许键盘输入，关闭时恢复 focusable=false
+ipcMain.handle('window:setFocusable', (_event, focusable: boolean) => {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.focusable = focusable
+    if (focusable) {
+      mainWindow.focus()
     }
   }
 })
@@ -312,7 +303,6 @@ ipcMain.handle('config:get', () => {
   try {
     const buttons = store.get('buttons')
     if (!buttons || !Array.isArray(buttons) || buttons.length === 0) {
-      // NOTE: 首次启动时写入默认按钮，确保后续读取一致
       store.set('buttons', DEFAULT_BUTTONS)
       return { buttons: DEFAULT_BUTTONS }
     }
@@ -337,9 +327,9 @@ ipcMain.handle('config:set', (_event, config: AppConfig) => {
     return { success: true }
   } catch (error) {
     console.error('保存配置失败:', error)
-    return { 
-      success: false, 
-      error: error instanceof Error ? error.message : '保存配置失败' 
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : '保存配置失败'
     }
   }
 })
@@ -353,9 +343,9 @@ ipcMain.handle('window:resize', (_event, width: number, height: number) => {
     }
     return { success: true }
   } catch (error) {
-    return { 
-      success: false, 
-      error: error instanceof Error ? error.message : '调整窗口大小失败' 
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : '调整窗口大小失败'
     }
   }
 })

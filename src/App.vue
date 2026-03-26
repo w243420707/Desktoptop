@@ -150,6 +150,8 @@ const openAddModal = async () => {
 
 const openModal = async () => {
   if (isElectron.value) {
+    // NOTE: 模态框需要键盘输入，临时允许窗口获取焦点
+    await (window as any).electronAPI.setFocusable(true)
     const config = await (window as any).electronAPI.getConfig()
     const buttonCount = config?.buttons?.length || 0
     savedWindowHeight.value = buttonCount
@@ -171,6 +173,8 @@ const closeModal = async () => {
     const CONTAINER_PADDING = 12
     const height = HEADER_HEIGHT + CONTAINER_PADDING + buttonCount * BUTTON_HEIGHT + (buttonCount - 1) * BUTTON_GAP + CONTAINER_PADDING
     await (window as any).electronAPI.resizeWindow(100, Math.max(300, height))
+    // NOTE: 模态框关闭后恢复不可聚焦状态，防止窗口抢焦点
+    await (window as any).electronAPI.setFocusable(false)
   }
 }
 
