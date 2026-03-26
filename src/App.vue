@@ -35,7 +35,9 @@ const loadConfig = async () => {
 const saveConfig = async () => {
   if (!isElectron.value) return
   try {
-    await (window as any).electronAPI.setConfig({ buttons: buttons.value })
+    // NOTE: 必须将 Vue Proxy 转为纯对象，否则 Electron IPC 序列化可能丢失数据
+    const rawButtons = JSON.parse(JSON.stringify(buttons.value))
+    await (window as any).electronAPI.setConfig({ buttons: rawButtons })
   } catch (error) {
     console.error('保存配置失败:', error)
   }
@@ -56,14 +58,53 @@ onUnmounted(() => {
   document.removeEventListener('keydown', handleShortcutKeydown)
 })
 
-const handleButtonClick = async (button: QuickButton) => {
+// NOTE: 拖拽判定阈值（像素），超过此距离视为拖拽而非点击
+const DRAG_THRESHOLD = 5
+const isDragging = ref(false)
+const dragStartScreen = ref({ x: 0, y: 0 })
+const windowStartPos = ref({ x: 0, y: 0 })
+
+const handleMouseDown = async (e: MouseEvent, button: QuickButton) => {
+  if (e.button !== 0) return
   if (contextMenuVisible.value) {
     hideContextMenu()
     return
   }
-  
   if (!isElectron.value) return
-  
+
+  dragStartScreen.value = { x: e.screenX, y: e.screenY }
+  const pos = await (window as any).electronAPI.getWindowPosition()
+  windowStartPos.value = { x: pos.x, y: pos.y }
+  isDragging.value = false
+
+  const onMouseMove = (ev: MouseEvent) => {
+    const dx = ev.screenX - dragStartScreen.value.x
+    const dy = ev.screenY - dragStartScreen.value.y
+    if (Math.abs(dx) > DRAG_THRESHOLD || Math.abs(dy) > DRAG_THRESHOLD) {
+      isDragging.value = true
+      ;(window as any).electronAPI.setWindowPosition(
+        windowStartPos.value.x + dx,
+        windowStartPos.value.y + dy
+      )
+    }
+  }
+
+  const onMouseUp = () => {
+    document.removeEventListener('mousemove', onMouseMove)
+    document.removeEventListener('mouseup', onMouseUp)
+    if (!isDragging.value) {
+      handleButtonClick(button)
+    }
+    isDragging.value = false
+  }
+
+  document.addEventListener('mousemove', onMouseMove)
+  document.addEventListener('mouseup', onMouseUp)
+}
+
+const handleButtonClick = async (button: QuickButton) => {
+  if (!isElectron.value) return
+
   if (button.type === 'text' && button.content) {
     await (window as any).electronAPI.inputText(button.content, button.appendEnter)
   } else if (button.type === 'shortcut' && button.content) {
@@ -101,6 +142,12 @@ const editButton = async () => {
   hideContextMenu()
 }
 
+const openAddModal = async () => {
+  editingButton.value = null
+  newButton.value = { id: '', name: '', type: 'text', content: '', appendEnter: false }
+  await openModal()
+}
+
 const openModal = async () => {
   if (isElectron.value) {
     const config = await (window as any).electronAPI.getConfig()
@@ -120,7 +167,7 @@ const closeModal = async () => {
     const buttonCount = config?.buttons?.length || 0
     const BUTTON_HEIGHT = 32
     const BUTTON_GAP = 4
-    const HEADER_HEIGHT = 22
+    const HEADER_HEIGHT = 0
     const CONTAINER_PADDING = 12
     const height = HEADER_HEIGHT + CONTAINER_PADDING + buttonCount * BUTTON_HEIGHT + (buttonCount - 1) * BUTTON_GAP + CONTAINER_PADDING
     await (window as any).electronAPI.resizeWindow(100, Math.max(300, height))
@@ -200,17 +247,17 @@ const handleShortcutKeydown = (e: KeyboardEvent) => {
 
 <template>
   <div class="container">
-    <div class="drag-handle">⋮⋮</div>
     <div class="button-list">
       <div 
         v-for="button in buttons" 
         :key="button.id" 
         class="quick-btn"
-        @click="handleButtonClick(button)"
+        @mousedown="handleMouseDown($event, button)"
         @contextmenu="showContextMenu($event, button.id)"
       >
         {{ button.name }}
       </div>
+      <div class="quick-btn add-btn" @click="openAddModal">＋</div>
     </div>
     
     <Teleport to="body">
@@ -285,27 +332,8 @@ body {
 
 .container {
   padding: 6px;
-  padding-top: 20px;
   position: relative;
   height: 100vh;
-}
-
-.drag-handle {
-  position: absolute;
-  top: 2px;
-  left: 50%;
-  transform: translateX(-50%);
-  width: 30px;
-  height: 14px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: rgba(255, 255, 255, 0.4);
-  font-size: 10px;
-  letter-spacing: -2px;
-  cursor: move;
-  -webkit-app-region: drag;
-  user-select: none;
 }
 
 .button-list {

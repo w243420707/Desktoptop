@@ -32,11 +32,7 @@ const store = new Store<AppConfig>({
 
 const DEFAULT_BUTTONS: QuickButton[] = [
   { id: '1', name: '复制', type: 'shortcut', content: 'Ctrl+C' },
-  { id: '2', name: '粘贴', type: 'shortcut', content: 'Ctrl+V' },
-  { id: '3', name: '续写', type: 'text', content: '继续续写', appendEnter: true },
-  { id: '4', name: '继续', type: 'text', content: '继续', appendEnter: true },
-  { id: '5', name: '严格', type: 'text', content: '严格执行', appendEnter: false },
-  { id: '6', name: '更新', type: 'text', content: '全量检查这部小说的所有文件，是否都根据正文做了更新', appendEnter: true }
+  { id: '2', name: '粘贴', type: 'shortcut', content: 'Ctrl+V' }
 ]
 
 const WINDOW_WIDTH = 100
@@ -44,7 +40,7 @@ const WINDOW_MIN_HEIGHT = 300
 const WINDOW_MAX_HEIGHT = 500
 const BUTTON_HEIGHT = 32
 const BUTTON_GAP = 4
-const HEADER_HEIGHT = 22
+const HEADER_HEIGHT = 0
 const CONTAINER_PADDING = 12
 
 let mainWindow: BrowserWindow | null = null
@@ -84,8 +80,8 @@ function saveWindowPosition(): void {
 }
 
 function createWindow(): void {
-  const config = store.store
-  const buttonCount = config?.buttons?.length || 0
+  const buttons = store.get('buttons', DEFAULT_BUTTONS)
+  const buttonCount = buttons?.length || 0
   const height = calculateWindowHeight(buttonCount)
   const position = getSavedPosition(height)
   
@@ -314,11 +310,13 @@ ipcMain.handle('execute:shortcut', async (_event, shortcut: string) => {
 
 ipcMain.handle('config:get', () => {
   try {
-    const config = store.store
-    if (!config || !config.buttons) {
+    const buttons = store.get('buttons')
+    if (!buttons || !Array.isArray(buttons) || buttons.length === 0) {
+      // NOTE: 首次启动时写入默认按钮，确保后续读取一致
+      store.set('buttons', DEFAULT_BUTTONS)
       return { buttons: DEFAULT_BUTTONS }
     }
-    return config
+    return { buttons }
   } catch (error) {
     console.error('获取配置失败:', error)
     return { buttons: DEFAULT_BUTTONS }
@@ -327,7 +325,9 @@ ipcMain.handle('config:get', () => {
 
 ipcMain.handle('config:set', (_event, config: AppConfig) => {
   try {
-    store.store = config
+    if (config.buttons) {
+      store.set('buttons', config.buttons)
+    }
     if (mainWindow && !mainWindow.isDestroyed() && config.buttons) {
       const newHeight = calculateWindowHeight(config.buttons.length)
       mainWindow.setSize(WINDOW_WIDTH, newHeight)
@@ -357,5 +357,19 @@ ipcMain.handle('window:resize', (_event, width: number, height: number) => {
       success: false, 
       error: error instanceof Error ? error.message : '调整窗口大小失败' 
     }
+  }
+})
+
+ipcMain.handle('window:getPosition', () => {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    const [x, y] = mainWindow.getPosition()
+    return { x, y }
+  }
+  return { x: 0, y: 0 }
+})
+
+ipcMain.handle('window:setPosition', (_event, x: number, y: number) => {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.setPosition(Math.round(x), Math.round(y))
   }
 })

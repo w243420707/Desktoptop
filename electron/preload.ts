@@ -10,7 +10,11 @@ const electronAPI = {
   setConfig: (config: any) => 
     ipcRenderer.invoke('config:set', config),
   resizeWindow: (width: number, height: number) => 
-    ipcRenderer.invoke('window:resize', width, height)
+    ipcRenderer.invoke('window:resize', width, height),
+  getWindowPosition: () =>
+    ipcRenderer.invoke('window:getPosition'),
+  setWindowPosition: (x: number, y: number) =>
+    ipcRenderer.invoke('window:setPosition', x, y)
 }
 
 contextBridge.exposeInMainWorld('electronAPI', electronAPI)
