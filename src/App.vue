@@ -58,44 +58,30 @@ onUnmounted(() => {
   document.removeEventListener('keydown', handleShortcutKeydown)
 })
 
-// NOTE: 拖拽判定阈值（像素），超过此距离视为拖拽而非点击
-const DRAG_THRESHOLD = 5
-const isDragging = ref(false)
+// NOTE: 拖拽逻辑仅绑定到顶部拖拽手柄，按钮点击不再触发拖拽
 const dragStartScreen = ref({ x: 0, y: 0 })
 const windowStartPos = ref({ x: 0, y: 0 })
 
-const handleMouseDown = async (e: MouseEvent, button: QuickButton) => {
+const handleDragStart = async (e: MouseEvent) => {
   if (e.button !== 0) return
-  if (contextMenuVisible.value) {
-    hideContextMenu()
-    return
-  }
   if (!isElectron.value) return
 
   dragStartScreen.value = { x: e.screenX, y: e.screenY }
   const pos = await (window as any).electronAPI.getWindowPosition()
   windowStartPos.value = { x: pos.x, y: pos.y }
-  isDragging.value = false
 
   const onMouseMove = (ev: MouseEvent) => {
     const dx = ev.screenX - dragStartScreen.value.x
     const dy = ev.screenY - dragStartScreen.value.y
-    if (Math.abs(dx) > DRAG_THRESHOLD || Math.abs(dy) > DRAG_THRESHOLD) {
-      isDragging.value = true
-      ;(window as any).electronAPI.setWindowPosition(
-        windowStartPos.value.x + dx,
-        windowStartPos.value.y + dy
-      )
-    }
+    ;(window as any).electronAPI.setWindowPosition(
+      windowStartPos.value.x + dx,
+      windowStartPos.value.y + dy
+    )
   }
 
   const onMouseUp = () => {
     document.removeEventListener('mousemove', onMouseMove)
     document.removeEventListener('mouseup', onMouseUp)
-    if (!isDragging.value) {
-      handleButtonClick(button)
-    }
-    isDragging.value = false
   }
 
   document.addEventListener('mousemove', onMouseMove)
@@ -169,7 +155,7 @@ const closeModal = async () => {
     const buttonCount = config?.buttons?.length || 0
     const BUTTON_HEIGHT = 32
     const BUTTON_GAP = 4
-    const HEADER_HEIGHT = 0
+    const HEADER_HEIGHT = 22
     const CONTAINER_PADDING = 12
     const height = HEADER_HEIGHT + CONTAINER_PADDING + buttonCount * BUTTON_HEIGHT + (buttonCount - 1) * BUTTON_GAP + CONTAINER_PADDING
     await (window as any).electronAPI.resizeWindow(100, Math.max(300, height))
@@ -251,12 +237,16 @@ const handleShortcutKeydown = (e: KeyboardEvent) => {
 
 <template>
   <div class="container">
+    <!-- NOTE: 拖拽手柄，仅此处可拖拽移动窗口 -->
+    <div class="drag-handle" @mousedown="handleDragStart">
+      <span class="drag-dots">⋮⋮</span>
+    </div>
     <div class="button-list">
       <div 
         v-for="button in buttons" 
         :key="button.id" 
         class="quick-btn"
-        @mousedown="handleMouseDown($event, button)"
+        @click="handleButtonClick(button)"
         @contextmenu="showContextMenu($event, button.id)"
       >
         {{ button.name }}
@@ -336,8 +326,38 @@ body {
 
 .container {
   padding: 6px;
+  padding-top: 0;
   position: relative;
   height: 100vh;
+}
+
+.drag-handle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 18px;
+  cursor: grab;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 6px 6px 0 0;
+  margin-bottom: 4px;
+  transition: background 0.2s;
+  user-select: none;
+}
+
+.drag-handle:hover {
+  background: rgba(255, 255, 255, 0.18);
+}
+
+.drag-handle:active {
+  cursor: grabbing;
+  background: rgba(255, 255, 255, 0.25);
+}
+
+.drag-dots {
+  color: rgba(255, 255, 255, 0.4);
+  font-size: 10px;
+  letter-spacing: 2px;
+  line-height: 1;
 }
 
 .button-list {

@@ -40,7 +40,8 @@ const WINDOW_MIN_HEIGHT = 300
 const WINDOW_MAX_HEIGHT = 500
 const BUTTON_HEIGHT = 32
 const BUTTON_GAP = 4
-const HEADER_HEIGHT = 0
+// NOTE: 顶部拖拽手柄高度 18px + 下方间距 4px
+const HEADER_HEIGHT = 22
 const CONTAINER_PADDING = 12
 
 let mainWindow: BrowserWindow | null = null
